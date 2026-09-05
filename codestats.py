@@ -25,9 +25,9 @@ import re
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 # ==========================================================================
@@ -89,7 +89,7 @@ LANGUAGE_MAP = {
     ".r": "R", ".rmd": "R Markdown",
     ".jl": "Julia",
     ".groovy": "Groovy", ".gradle": "Gradle",
-    ".m": "MATLAB",
+    ".m": "Objective-C",  # or MATLAB; decided by content, see AMBIGUOUS_EXTS
     # Web
     ".js": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
     ".jsx": "JavaScript (JSX)",
@@ -103,8 +103,13 @@ LANGUAGE_MAP = {
     ".styl": "Stylus",
     # Systems
     ".c": "C", ".h": "C Header",
-    ".cpp": "C++", ".cc": "C++", ".cxx": "C++",
+    ".cpp": "C++", ".cc": "C++", ".cxx": "C++", ".c++": "C++",
+    ".ipp": "C++", ".tpp": "C++", ".txx": "C++",
+    ".ixx": "C++ Module", ".cppm": "C++ Module", ".mpp": "C++ Module",
     ".hpp": "C++ Header", ".hh": "C++ Header", ".hxx": "C++ Header",
+    ".h++": "C++ Header", ".inl": "C++ Header",
+    ".cu": "CUDA", ".cuh": "CUDA Header",
+    ".ino": "Arduino", ".pde": "Arduino",
     ".cs": "C#", ".csx": "C#",
     ".java": "Java",
     ".kt": "Kotlin", ".kts": "Kotlin",
@@ -150,7 +155,23 @@ LANGUAGE_MAP = {
     ".prisma": "Prisma",
     ".nix": "Nix",
     ".cmake": "CMake",
-    ".mk": "Makefile",
+    ".mk": "Makefile", ".mak": "Makefile", ".make": "Makefile",
+    # C and C++ toolchain files
+    ".vcxproj": "MSBuild", ".vcproj": "MSBuild", ".csproj": "MSBuild",
+    ".props": "MSBuild", ".targets": "MSBuild", ".filters": "MSBuild",
+    ".sln": "Visual Studio Solution",
+    ".pro": "QMake", ".pri": "QMake",
+    ".ui": "Qt UI", ".qrc": "Qt Resource", ".natvis": "XML",
+    ".am": "Automake", ".ac": "Autoconf", ".m4": "M4",
+    ".ninja": "Ninja", ".bzl": "Starlark",
+    ".rc": "Windows Resource", ".def": "Module Definition", ".idl": "IDL",
+    ".ld": "Linker Script", ".lds": "Linker Script",
+    # Shaders
+    ".hlsl": "HLSL", ".fx": "HLSL", ".compute": "HLSL",
+    ".glsl": "GLSL", ".vert": "GLSL", ".frag": "GLSL", ".geom": "GLSL",
+    ".comp": "GLSL", ".tesc": "GLSL", ".tese": "GLSL",
+    ".metal": "Metal", ".wgsl": "WGSL", ".shader": "ShaderLab",
+    ".patch": "Diff", ".diff": "Diff",
     # Docs and data
     ".md": "Markdown", ".markdown": "Markdown", ".mdx": "MDX",
     ".rst": "reStructuredText",
@@ -171,9 +192,15 @@ SPECIAL_FILENAMES = {
     "Makefile": "Makefile", "makefile": "Makefile", "GNUmakefile": "Makefile",
     "Rakefile": "Ruby", "Gemfile": "Ruby", "Vagrantfile": "Ruby",
     "Podfile": "Ruby", "Brewfile": "Ruby",
-    "CMakeLists.txt": "CMake",
+    "CMakeLists.txt": "CMake", "CMakePresets.json": "JSON",
+    "meson.build": "Meson", "meson_options.txt": "Meson",
+    "SConstruct": "Python", "SConscript": "Python",
+    "Kbuild": "Makefile", "Makefile.am": "Automake",
+    "configure.ac": "Autoconf", "configure.in": "Autoconf",
     "Jenkinsfile": "Groovy",
-    "BUILD": "Bazel", "WORKSPACE": "Bazel",
+    "BUILD": "Bazel", "WORKSPACE": "Bazel", "BUILD.bazel": "Bazel",
+    ".clang-format": "YAML", ".clang-tidy": "YAML", ".gitmodules": "Config",
+    "compile_flags.txt": "Config", "vcpkg.json": "JSON",
     "requirements.txt": "Config", "constraints.txt": "Config",
     ".gitignore": "Config", ".gitattributes": "Config",
     ".dockerignore": "Config", ".editorconfig": "Config",
@@ -217,7 +244,16 @@ COMMENT_SYNTAX = {
     "C": C_STYLE, "C Header": C_STYLE, "C++": C_STYLE, "C++ Header": C_STYLE,
     "C#": C_STYLE, "Java": C_STYLE, "Kotlin": C_STYLE, "Scala": C_STYLE,
     "Go": C_STYLE, "Rust": C_STYLE, "Swift": C_STYLE, "Dart": C_STYLE,
-    "Objective-C++": C_STYLE, "Zig": (("//",), ()),
+    "Objective-C": C_STYLE, "Objective-C++": C_STYLE, "Zig": (("//",), ()),
+    "C++ Module": C_STYLE, "CUDA": C_STYLE, "CUDA Header": C_STYLE,
+    "Arduino": C_STYLE, "Windows Resource": C_STYLE, "IDL": C_STYLE,
+    "HLSL": C_STYLE, "GLSL": C_STYLE, "Metal": C_STYLE, "WGSL": C_STYLE,
+    "ShaderLab": C_STYLE, "Linker Script": ((), (("/*", "*/"),)),
+    "Module Definition": ((";",), ()),
+    "MSBuild": HTML_STYLE, "Qt UI": HTML_STYLE, "Qt Resource": HTML_STYLE,
+    "QMake": HASH_STYLE, "Automake": HASH_STYLE, "Ninja": HASH_STYLE,
+    "Meson": HASH_STYLE, "Starlark": HASH_STYLE,
+    "Autoconf": (("dnl", "#"), ()), "M4": (("dnl", "#"), ()),
     "D": C_STYLE, "Nim": HASH_STYLE, "Solidity": C_STYLE,
     "PHP": (("//", "#"), (("/*", "*/"),)),
     "SQL": (("--",), (("/*", "*/"),)),
@@ -509,20 +545,65 @@ class ScanResult:
     skipped_binary: int = 0
     skipped_large: int = 0
     duration: float = 0.0
+    unknown_files: list[str] = field(default_factory=list)
+    skipped_dirs: list[str] = field(default_factory=list)
+
+    def unknown_by_extension(self) -> list[tuple[str, int]]:
+        """Unrecognized files grouped by extension, most common first."""
+        counts: dict[str, int] = defaultdict(int)
+        for path in self.unknown_files:
+            ext = os.path.splitext(path)[1].lower()
+            counts[ext or "(no extension)"] += 1
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+# Suffixes that wrap another file name, e.g. config.h.in or main.cpp.template.
+TEMPLATE_EXTS = {".in", ".tmpl", ".template", ".orig", ".bak"}
+
+# Extensions two languages share, resolved by looking at the file itself.
+AMBIGUOUS_EXTS = {".m"}
+
+OBJC_HINT = re.compile(r"^\s*(#import|#include|@interface|@implementation|@property|@end)", re.M)
+MATLAB_HINT = re.compile(r"^\s*(function\s|classdef\s|%%|end\s*$)", re.M)
 
 
 def detect_language(filename: str, path: str | None = None) -> str | None:
     """Work out the language from the file name, then from a shebang."""
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]
-    _, ext = os.path.splitext(filename)
+
+    stem, ext = os.path.splitext(filename)
+    lowered = ext.lower()
+
+    # config.h.in is a C header, Makefile.in is a Makefile.
+    if lowered in TEMPLATE_EXTS and stem:
+        return detect_language(stem, path)
+
+    if lowered in AMBIGUOUS_EXTS and path:
+        resolved = resolve_ambiguous(lowered, path)
+        if resolved:
+            return resolved
+
     if ext:
-        language = LANGUAGE_MAP.get(ext.lower())
-        if language:
-            return language
-        return None
+        return LANGUAGE_MAP.get(lowered)
     if path:
         return language_from_shebang(path)
+    return None
+
+
+def resolve_ambiguous(ext: str, path: str) -> str | None:
+    """Tell Objective-C and MATLAB apart by peeking at the file."""
+    if ext != ".m":
+        return None
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096).decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+    if OBJC_HINT.search(head):
+        return "Objective-C"
+    if MATLAB_HINT.search(head):
+        return "MATLAB"
     return None
 
 
@@ -647,6 +728,8 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
     entries: list[FileEntry] = []
     total = Stats()
     skipped_unknown = skipped_binary = skipped_large = 0
+    unknown_files: list[str] = []
+    skipped_dirs: list[str] = []
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_links):
         rel_dir = os.path.relpath(dirpath, root)
@@ -655,10 +738,14 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
         if filters.gitignore is not None and ".gitignore" in filenames:
             filters.gitignore.add_file(os.path.join(dirpath, ".gitignore"), rel_dir)
 
-        dirnames[:] = sorted(
-            name for name in dirnames
-            if not filters.skip_dir(name, f"{rel_dir}/{name}" if rel_dir else name)
-        )
+        kept: list[str] = []
+        for name in sorted(dirnames):
+            rel_sub = f"{rel_dir}/{name}" if rel_dir else name
+            if filters.skip_dir(name, rel_sub):
+                skipped_dirs.append(rel_sub)
+            else:
+                kept.append(name)
+        dirnames[:] = kept
 
         for filename in sorted(filenames):
             rel_path = f"{rel_dir}/{filename}" if rel_dir else filename
@@ -669,6 +756,7 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
             language = detect_language(filename, full_path)
             if language is None:
                 skipped_unknown += 1
+                unknown_files.append(rel_path)
                 continue
 
             if filters.max_bytes is not None:
@@ -700,6 +788,8 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
         files=entries,
         total=total,
         skipped_unknown=skipped_unknown,
+        unknown_files=unknown_files,
+        skipped_dirs=skipped_dirs,
         skipped_binary=skipped_binary,
         skipped_large=skipped_large,
         duration=time.perf_counter() - started,
@@ -835,13 +925,19 @@ def print_table(result: ScanResult, args: argparse.Namespace, paint: Palette) ->
 
     notes = []
     if result.skipped_unknown:
-        notes.append(f"{result.skipped_unknown} unrecognized")
+        by_ext = result.unknown_by_extension()
+        head = ", ".join(f"{ext} x{count}" for ext, count in by_ext[:4])
+        if len(by_ext) > 4:
+            head += ", ..."
+        notes.append(f"{result.skipped_unknown} unrecognized ({head})")
     if result.skipped_binary:
         notes.append(f"{result.skipped_binary} binary")
     if result.skipped_large:
         notes.append(f"{result.skipped_large} over size limit")
     if notes:
-        print(paint("skipped: " + ", ".join(notes), "bright_black"))
+        print(paint("skipped: " + "; ".join(notes), "bright_black"))
+    if result.skipped_unknown and not args.show_unknown:
+        print(paint("run with --show-unknown to see which files those are", "bright_black"))
 
 
 def comment_ratio(stats: Stats) -> float:
@@ -878,6 +974,44 @@ def print_files(result: ScanResult, args: argparse.Namespace, paint: Palette) ->
     print()
 
 
+def print_unknown(result: ScanResult, paint: Palette, limit: int = 10) -> None:
+    """Explain what the scan left out, so missing languages can be traced."""
+    if not result.unknown_files and not result.skipped_dirs:
+        print(paint("Every file in the tree was recognized.", "bold"))
+        print()
+        return
+
+    if result.unknown_files:
+        by_ext = result.unknown_by_extension()
+        print(paint(f"Unrecognized files ({len(result.unknown_files)})", "bold"))
+        print(paint("add an extension to LANGUAGE_MAP to start counting these",
+                    "bright_black"))
+        print(paint("-" * 60, "bright_black"))
+        examples = defaultdict(list)
+        for path in result.unknown_files:
+            ext = os.path.splitext(path)[1].lower() or "(no extension)"
+            examples[ext].append(path)
+        for ext, count in by_ext:
+            print(f"{paint(ext.ljust(16), 'bright_cyan')} {count:>5} "
+                  f"{plural(count, 'file')}")
+            for path in examples[ext][:limit]:
+                print(paint(f"    {path}", "bright_black"))
+            if count > limit:
+                print(paint(f"    ... and {count - limit} more", "bright_black"))
+        print()
+
+    if result.skipped_dirs:
+        names = sorted({os.path.basename(path) for path in result.skipped_dirs})
+        print(paint(f"Skipped directories ({len(result.skipped_dirs)})", "bold"))
+        print(paint("-" * 60, "bright_black"))
+        print(paint("  " + ", ".join(names), "bright_black"))
+        print(paint("  these came from IGNORE_DIRS, .gitignore, --exclude or the "
+                    "hidden-file rule", "bright_black"))
+        print(paint("  use --no-defaults, --no-gitignore or --include-hidden to "
+                    "count them", "bright_black"))
+        print()
+
+
 def to_dict(result: ScanResult, include_files: bool) -> dict:
     def stats_dict(stats: Stats) -> dict:
         return {
@@ -903,6 +1037,7 @@ def to_dict(result: ScanResult, include_files: bool) -> dict:
             "unrecognized": result.skipped_unknown,
             "binary": result.skipped_binary,
             "too_large": result.skipped_large,
+            "unrecognized_extensions": dict(result.unknown_by_extension()),
         },
     }
     if include_files:
@@ -967,6 +1102,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="column to sort languages by (default: lines)")
     output.add_argument("--ascending", action="store_true", help="sort smallest first")
     output.add_argument("--no-bar", action="store_true", help="drop the share column")
+    output.add_argument("--show-unknown", action="store_true",
+                        help="list the files and directories the scan left out")
     output.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                         help="when to use colored output (default: auto)")
 
@@ -1047,11 +1184,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not result.languages:
         print("No recognized source files found.")
-        print("Try --include-hidden, --no-defaults, or add extensions to LANGUAGE_MAP.")
+        print("Try --show-unknown to see what was skipped, or --include-hidden,")
+        print("--no-defaults, or add extensions to LANGUAGE_MAP.")
+        if args.show_unknown:
+            print()
+            print_unknown(result, paint)
         return 0
 
     print(paint(f"codestats {__version__}", "bold") + paint(f"  {root}", "bright_black"))
     print()
+    if args.show_unknown:
+        print_unknown(result, paint)
     if args.per_file is not None:
         print_files(result, args, paint)
     print_table(result, args, paint)

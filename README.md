@@ -61,7 +61,7 @@ python codestats.py --json > stats.json              # machine readable
 ```json
 {
   "root": "/home/dev/acme-shop",
-  "generated_by": "codestats 1.1.0",
+  "generated_by": "codestats 1.2.0",
   "duration_seconds": 0.0061,
   "languages": {
     "Python": {
@@ -86,7 +86,8 @@ python codestats.py --json > stats.json              # machine readable
   "skipped": {
     "unrecognized": 0,
     "binary": 0,
-    "too_large": 0
+    "too_large": 0,
+    "unrecognized_extensions": {}
   }
 }
 ```
@@ -125,6 +126,7 @@ output:
                         column to sort languages by (default: lines)
   --ascending           sort smallest first
   --no-bar              drop the share column
+  --show-unknown        list the files and directories the scan left out
   --color {auto,always,never}
                         when to use colored output (default: auto)
 
@@ -161,6 +163,37 @@ On top of that:
 
 Every list is a plain Python set at the top of the file. Editing them is the intended way to tune the tool for your projects, and `--ignore-dir`, `--ignore-ext` and `--exclude` cover one-off runs.
 
+## A language is missing from the table
+
+Run the scan again with `--show-unknown`. It prints every file the scan did not recognize, grouped by extension, along with the directories it walked past:
+
+```
+Unrecognized files (4)
+add an extension to LANGUAGE_MAP to start counting these
+------------------------------------------------------------
+.pak                 2 files
+    assets/core.pak
+    assets/audio.pak
+(no extension)       1 file
+    CHANGELOG
+.qqq                 1 file
+    tools/notes.qqq
+
+Skipped directories (2)
+------------------------------------------------------------
+  build, vendor
+```
+
+That splits the two causes apart. If the files appear under "Unrecognized", add their extension to `LANGUAGE_MAP`. If they do not appear at all, they sat inside a skipped directory, and the second list names it: `build`, `out`, `bin`, `obj`, `target` and `vendor` are ignored by default, which catches a fair amount of real source in C and C++ trees. Count them with `--no-defaults`, or keep the defaults and re-add the one you need:
+
+```bash
+python codestats.py --show-unknown          # what did it miss, and why
+python codestats.py --no-defaults           # count everything, ignore lists off
+python codestats.py --include-hidden        # count dotfiles too
+```
+
+The table footer names the top unrecognized extensions even without the flag, so `skipped: 20 unrecognized (.pak x9, .qqq x6, ...)` tells you where to look first.
+
 ## How lines are classified
 
 Every line lands in exactly one of three buckets:
@@ -171,13 +204,17 @@ Every line lands in exactly one of three buckets:
 
 A comment after code on the same line (`value = 1  # note`) counts as code, which matches how most line counters report. Python docstrings count as comments. The classifier works marker by marker rather than parsing each language, so a comment marker inside a string literal can be misread. It is a well behaved heuristic for reporting on a codebase, not a lexer, and the numbers land within a percent or so of dedicated tools on ordinary source.
 
-Comment syntax is defined per language in `COMMENT_SYNTAX`, which covers 94 of the 97 languages, with line markers (`#`, `//`, `--`, `%`, `;`, `"`) and block pairs (`/* */`, `<!-- -->`, `""" """`, `{- -}`, `(* *)`, `=begin =end`, and others).
+Comment syntax is defined per language in `COMMENT_SYNTAX`, which covers 117 of the 122 languages, with line markers (`#`, `//`, `--`, `%`, `;`, `"`) and block pairs (`/* */`, `<!-- -->`, `""" """`, `{- -}`, `(* *)`, `=begin =end`, and others).
 
 ## Languages
 
-144 extensions map to 97 languages, from Python, TypeScript, Go, Rust, C, C++, C#, Java, Kotlin, Swift and PHP through to Elixir, Haskell, OCaml, Zig, Nim, Solidity and GDScript, plus markup, styles, config, SQL and shell.
+196 extensions map to 122 languages, from Python, TypeScript, Go, Rust, C, C++, C#, Java, Kotlin, Swift and PHP through to Elixir, Haskell, OCaml, Zig, Nim, Solidity and GDScript, plus markup, styles, config, SQL and shell.
 
 Files named `Dockerfile`, `Makefile`, `Gemfile`, `Rakefile`, `CMakeLists.txt`, `Jenkinsfile` and friends are recognized by name. Extensionless scripts are identified from their shebang, so `#!/usr/bin/env python3` counts as Python.
+
+For C and C++ specifically, that covers `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.c++`, `.ipp`, `.tpp`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.inl`, the module extensions `.ixx` and `.cppm`, CUDA `.cu` and `.cuh`, and Arduino `.ino`. The surrounding toolchain counts too: MSBuild project files, Visual Studio solutions, qmake, Meson, Ninja, autotools, `.rc` resources, `.def` module definitions, linker scripts, and HLSL, GLSL, Metal and WGSL shaders.
+
+Two file names get resolved by content rather than by extension. A `.m` file is Objective-C or MATLAB depending on what is inside it, and a template such as `config.h.in` is counted as whatever it wraps, in that case a C header.
 
 To add a language, add its extension to `LANGUAGE_MAP` and, if you want comment counts, an entry in `COMMENT_SYNTAX`.
 
@@ -187,7 +224,7 @@ To add a language, add its extension to `LANGUAGE_MAP` and, if you want comment 
 python -m unittest discover -s tests -v
 ```
 
-48 tests cover language detection, comment and blank classification per comment style, `.gitignore` matching, the filters, the formatters and the command line. They run on every push through GitHub Actions.
+60 tests cover language detection, comment and blank classification per comment style, `.gitignore` matching, the filters, the formatters and the command line. They run on every push through GitHub Actions.
 
 ## License
 

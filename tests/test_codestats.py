@@ -39,6 +39,51 @@ class LanguageDetectionTests(unittest.TestCase):
     def test_unknown_extension(self):
         self.assertIsNone(codestats.detect_language("archive.qqq"))
 
+    def test_cpp_family(self):
+        for name in ("main.cpp", "app.cc", "old.cxx", "weird.c++",
+                     "matrix.ipp", "traits.tpp"):
+            self.assertEqual(codestats.detect_language(name), "C++", name)
+        for name in ("widget.hpp", "widget.hh", "widget.hxx", "widget.h++",
+                     "impl.inl"):
+            self.assertEqual(codestats.detect_language(name), "C++ Header", name)
+        for name in ("engine.ixx", "engine.cppm"):
+            self.assertEqual(codestats.detect_language(name), "C++ Module", name)
+        self.assertEqual(codestats.detect_language("kernel.cu"), "CUDA")
+        self.assertEqual(codestats.detect_language("sketch.ino"), "Arduino")
+
+    def test_cpp_toolchain_files(self):
+        self.assertEqual(codestats.detect_language("App.vcxproj"), "MSBuild")
+        self.assertEqual(codestats.detect_language("App.sln"), "Visual Studio Solution")
+        self.assertEqual(codestats.detect_language("App.pro"), "QMake")
+        self.assertEqual(codestats.detect_language("App.rc"), "Windows Resource")
+        self.assertEqual(codestats.detect_language("meson.build"), "Meson")
+        self.assertEqual(codestats.detect_language("Makefile.am"), "Automake")
+        self.assertEqual(codestats.detect_language("shader.frag"), "GLSL")
+        self.assertEqual(codestats.detect_language("light.hlsl"), "HLSL")
+
+    def test_template_suffix_falls_back_to_inner_extension(self):
+        self.assertEqual(codestats.detect_language("config.h.in"), "C Header")
+        self.assertEqual(codestats.detect_language("version.hpp.in"), "C++ Header")
+        self.assertEqual(codestats.detect_language("Makefile.in"), "Makefile")
+
+    def test_dot_m_resolves_by_content(self):
+        with tempfile.TemporaryDirectory() as root:
+            objc = write(root, "bridge.m", "#import <Foundation/Foundation.h>\n@interface A\n@end\n")
+            self.assertEqual(codestats.detect_language("bridge.m", objc), "Objective-C")
+
+            matlab = write(root, "solve.m", "function y = solve(x)\ny = x + 1;\nend\n")
+            self.assertEqual(codestats.detect_language("solve.m", matlab), "MATLAB")
+
+    def test_dot_m_defaults_to_objective_c_without_hints(self):
+        self.assertEqual(codestats.detect_language("empty.m"), "Objective-C")
+
+    def test_cpp_comment_counting(self):
+        source = "// note\n/* block\n   more */\nint main() { return 0; }\n"
+        _, code, comments, _ = codestats.count_lines(source, "C++")
+        self.assertEqual((code, comments), (1, 3))
+        _, _, comments, _ = codestats.count_lines("<!-- x -->\n<Project/>\n", "MSBuild")
+        self.assertEqual(comments, 1)
+
     def test_shebang_for_extensionless_files(self):
         with tempfile.TemporaryDirectory() as root:
             script = write(root, "runme", "#!/usr/bin/env python3\nprint(1)\n")
@@ -240,6 +285,21 @@ class ScanTests(unittest.TestCase):
         result = codestats.scan(self.root, self.filters())
         self.assertEqual(result.skipped_binary, 1)
 
+    def test_unknown_files_are_recorded_with_paths(self):
+        result = codestats.scan(self.root, self.filters())
+        self.assertEqual(result.unknown_files, ["notes.unknownext"])
+        self.assertEqual(result.unknown_by_extension(), [(".unknownext", 1)])
+
+    def test_unknown_grouping_counts_extensionless_files(self):
+        write(self.root, "CHANGELOG", "history\n")
+        result = codestats.scan(self.root, self.filters())
+        grouped = dict(result.unknown_by_extension())
+        self.assertEqual(grouped["(no extension)"], 1)
+
+    def test_skipped_directories_are_recorded(self):
+        result = codestats.scan(self.root, self.filters())
+        self.assertIn("node_modules", result.skipped_dirs)
+
     def test_totals_match_language_sums(self):
         result = codestats.scan(self.root, self.filters())
         self.assertEqual(
@@ -327,6 +387,27 @@ class CommandLineTests(unittest.TestCase):
     def test_no_bar_drops_share_column(self):
         _, output = self.run_cli("--color", "never", "--no-bar")
         self.assertNotIn("Share", output)
+
+    def test_show_unknown_lists_files_and_directories(self):
+        write(self.root, "assets.pak", "binaryish\n")
+        write(self.root, "node_modules/dep/index.js", "1\n")
+        _, output = self.run_cli("--color", "never", "--show-unknown")
+        self.assertIn("Unrecognized files (1)", output)
+        self.assertIn("assets.pak", output)
+        self.assertIn("Skipped directories", output)
+        self.assertIn("node_modules", output)
+
+    def test_footer_names_unknown_extensions(self):
+        write(self.root, "assets.pak", "binaryish\n")
+        _, output = self.run_cli("--color", "never")
+        self.assertIn(".pak x1", output)
+        self.assertIn("--show-unknown", output)
+
+    def test_json_reports_unknown_extensions(self):
+        write(self.root, "assets.pak", "binaryish\n")
+        _, output = self.run_cli("--json")
+        payload = json.loads(output)
+        self.assertEqual(payload["skipped"]["unrecognized_extensions"], {".pak": 1})
 
     def test_missing_directory_returns_error_code(self):
         code = codestats.main([os.path.join(self.root, "does-not-exist")])
