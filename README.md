@@ -61,7 +61,7 @@ python codestats.py --json > stats.json              # machine readable
 ```json
 {
   "root": "/home/dev/acme-shop",
-  "generated_by": "codestats 1.2.0",
+  "generated_by": "codestats 1.3.0",
   "duration_seconds": 0.0061,
   "languages": {
     "Python": {
@@ -168,23 +168,27 @@ Every list is a plain Python set at the top of the file. Editing them is the int
 Run the scan again with `--show-unknown`. It prints every file the scan did not recognize, grouped by extension, along with the directories it walked past:
 
 ```
-Unrecognized files (4)
+Unrecognized files (2)
 add an extension to LANGUAGE_MAP to start counting these
 ------------------------------------------------------------
-.pak                 2 files
-    assets/core.pak
-    assets/audio.pak
-(no extension)       1 file
-    CHANGELOG
 .qqq                 1 file
     tools/notes.qqq
+(no extension)       1 file
+    CHANGELOG
 
-Skipped directories (2)
+Skipped directories (5)
+nothing inside these was counted
 ------------------------------------------------------------
-  build, vendor
+.gitignore (4), count them with --no-gitignore
+    _backup/lib
+    build
+    libraries
+    tools/__pycache__
+ignore list (1), count them with --no-defaults, or --ignore-dir for one-off runs
+    .git
 ```
 
-That splits the two causes apart. If the files appear under "Unrecognized", add their extension to `LANGUAGE_MAP`. If they do not appear at all, they sat inside a skipped directory, and the second list names it: `build`, `out`, `bin`, `obj`, `target` and `vendor` are ignored by default, which catches a fair amount of real source in C and C++ trees. Count them with `--no-defaults`, or keep the defaults and re-add the one you need:
+That splits the two causes apart. If the files appear under "Unrecognized", add their extension to `LANGUAGE_MAP`. If they do not appear at all, they sat inside a skipped directory, and the second list names each one along with the reason and the flag that brings it back. Note that a directory named in your own `.gitignore` is skipped even under `--no-defaults`, since that flag only clears the built-in lists:
 
 ```bash
 python codestats.py --show-unknown          # what did it miss, and why
@@ -192,7 +196,7 @@ python codestats.py --no-defaults           # count everything, ignore lists off
 python codestats.py --include-hidden        # count dotfiles too
 ```
 
-The table footer names the top unrecognized extensions even without the flag, so `skipped: 20 unrecognized (.pak x9, .qqq x6, ...)` tells you where to look first.
+The table footer names the top unrecognized extensions even without the flag, so `skipped: 20 unrecognized (.pak x9, .qqq x6, ...)` tells you where to look first. A file with an unknown extension whose contents look binary is counted as binary rather than unrecognized, so images and archives do not pad the list with things you would never want counted.
 
 ## How lines are classified
 
@@ -212,9 +216,9 @@ Comment syntax is defined per language in `COMMENT_SYNTAX`, which covers 117 of 
 
 Files named `Dockerfile`, `Makefile`, `Gemfile`, `Rakefile`, `CMakeLists.txt`, `Jenkinsfile` and friends are recognized by name. Extensionless scripts are identified from their shebang, so `#!/usr/bin/env python3` counts as Python.
 
-For C and C++ specifically, that covers `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.c++`, `.ipp`, `.tpp`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.inl`, the module extensions `.ixx` and `.cppm`, CUDA `.cu` and `.cuh`, and Arduino `.ino`. The surrounding toolchain counts too: MSBuild project files, Visual Studio solutions, qmake, Meson, Ninja, autotools, `.rc` resources, `.def` module definitions, linker scripts, and HLSL, GLSL, Metal and WGSL shaders.
+For C and C++ specifically, that covers `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.c++`, `.ipp`, `.tpp`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.inl`, the module extensions `.ixx` and `.cppm`, and CUDA `.cu` and `.cuh`. Arduino sketches (`.ino`, `.pde`) report as `C++ (Arduino)`, kept as their own row so a sketch tree does not silently blend into a desktop C++ one. The surrounding toolchain counts too: MSBuild project files, Visual Studio solutions, qmake, Meson, Ninja, autotools, `.rc` resources, `.def` module definitions, linker scripts, and HLSL, GLSL, Metal and WGSL shaders.
 
-Two file names get resolved by content rather than by extension. A `.m` file is Objective-C or MATLAB depending on what is inside it, and a template such as `config.h.in` is counted as whatever it wraps, in that case a C header.
+Some names get resolved by content rather than by extension. A `.m` file is Objective-C or MATLAB depending on what is inside it, and a template such as `config.h.in` or `.env.example` is counted as whatever it wraps, in those cases a C header and a config file.
 
 To add a language, add its extension to `LANGUAGE_MAP` and, if you want comment counts, an entry in `COMMENT_SYNTAX`.
 
@@ -224,7 +228,7 @@ To add a language, add its extension to `LANGUAGE_MAP` and, if you want comment 
 python -m unittest discover -s tests -v
 ```
 
-60 tests cover language detection, comment and blank classification per comment style, `.gitignore` matching, the filters, the formatters and the command line. They run on every push through GitHub Actions.
+65 tests cover language detection, comment and blank classification per comment style, `.gitignore` matching, the filters, the formatters and the command line. They run on every push through GitHub Actions.
 
 ## License
 

@@ -49,7 +49,13 @@ class LanguageDetectionTests(unittest.TestCase):
         for name in ("engine.ixx", "engine.cppm"):
             self.assertEqual(codestats.detect_language(name), "C++ Module", name)
         self.assertEqual(codestats.detect_language("kernel.cu"), "CUDA")
-        self.assertEqual(codestats.detect_language("sketch.ino"), "Arduino")
+
+    def test_arduino_sketches_count_as_cpp(self):
+        self.assertEqual(codestats.detect_language("sketch.ino"), "C++ (Arduino)")
+        self.assertEqual(codestats.detect_language("old.pde"), "C++ (Arduino)")
+        _, code, comments, _ = codestats.count_lines(
+            "// setup\nvoid setup() {}\n", "C++ (Arduino)")
+        self.assertEqual((code, comments), (1, 1))
 
     def test_cpp_toolchain_files(self):
         self.assertEqual(codestats.detect_language("App.vcxproj"), "MSBuild")
@@ -65,6 +71,8 @@ class LanguageDetectionTests(unittest.TestCase):
         self.assertEqual(codestats.detect_language("config.h.in"), "C Header")
         self.assertEqual(codestats.detect_language("version.hpp.in"), "C++ Header")
         self.assertEqual(codestats.detect_language("Makefile.in"), "Makefile")
+        self.assertEqual(codestats.detect_language("mikrotik.env.example"), "Config")
+        self.assertEqual(codestats.detect_language("settings.json.sample"), "JSON")
 
     def test_dot_m_resolves_by_content(self):
         with tempfile.TemporaryDirectory() as root:
@@ -296,9 +304,35 @@ class ScanTests(unittest.TestCase):
         grouped = dict(result.unknown_by_extension())
         self.assertEqual(grouped["(no extension)"], 1)
 
-    def test_skipped_directories_are_recorded(self):
+    def test_skipped_directories_are_recorded_with_a_reason(self):
         result = codestats.scan(self.root, self.filters())
-        self.assertIn("node_modules", result.skipped_dirs)
+        self.assertIn(("node_modules", "ignore list"), result.skipped_dirs)
+
+    def test_skipped_directories_grouped_by_reason(self):
+        write(self.root, ".gitignore", "src/\n")
+        write(self.root, ".hidden/thing.py", "x = 1\n")
+        result = codestats.scan(self.root, self.filters(gitignore=codestats.GitIgnore()))
+        grouped = dict(result.skipped_dirs_by_reason())
+        self.assertIn("src", grouped[".gitignore"])
+        self.assertIn(".hidden", grouped["hidden"])
+        self.assertIn("node_modules", grouped["ignore list"])
+
+    def test_excluded_directory_names_the_exclude_flag(self):
+        result = codestats.scan(self.root, self.filters(exclude_globs=["src"]))
+        grouped = dict(result.skipped_dirs_by_reason())
+        self.assertIn("src", grouped["--exclude"])
+
+    def test_unknown_binary_file_counts_as_binary_not_unrecognized(self):
+        with open(os.path.join(self.root, "core.pak"), "wb") as handle:
+            handle.write(b"RIFF\x00\x00\x01binary payload")
+        result = codestats.scan(self.root, self.filters(ignore_exts=set()))
+        self.assertNotIn("core.pak", result.unknown_files)
+        self.assertGreaterEqual(result.skipped_binary, 1)
+
+    def test_unknown_text_file_is_still_reported(self):
+        write(self.root, "notes.qqq", "plain text\n")
+        result = codestats.scan(self.root, self.filters())
+        self.assertIn("notes.qqq", result.unknown_files)
 
     def test_totals_match_language_sums(self):
         result = codestats.scan(self.root, self.filters())

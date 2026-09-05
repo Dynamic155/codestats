@@ -27,7 +27,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 # ==========================================================================
@@ -109,7 +109,7 @@ LANGUAGE_MAP = {
     ".hpp": "C++ Header", ".hh": "C++ Header", ".hxx": "C++ Header",
     ".h++": "C++ Header", ".inl": "C++ Header",
     ".cu": "CUDA", ".cuh": "CUDA Header",
-    ".ino": "Arduino", ".pde": "Arduino",
+    ".ino": "C++ (Arduino)", ".pde": "C++ (Arduino)",
     ".cs": "C#", ".csx": "C#",
     ".java": "Java",
     ".kt": "Kotlin", ".kts": "Kotlin",
@@ -246,7 +246,7 @@ COMMENT_SYNTAX = {
     "Go": C_STYLE, "Rust": C_STYLE, "Swift": C_STYLE, "Dart": C_STYLE,
     "Objective-C": C_STYLE, "Objective-C++": C_STYLE, "Zig": (("//",), ()),
     "C++ Module": C_STYLE, "CUDA": C_STYLE, "CUDA Header": C_STYLE,
-    "Arduino": C_STYLE, "Windows Resource": C_STYLE, "IDL": C_STYLE,
+    "C++ (Arduino)": C_STYLE, "Windows Resource": C_STYLE, "IDL": C_STYLE,
     "HLSL": C_STYLE, "GLSL": C_STYLE, "Metal": C_STYLE, "WGSL": C_STYLE,
     "ShaderLab": C_STYLE, "Linker Script": ((), (("/*", "*/"),)),
     "Module Definition": ((";",), ()),
@@ -470,16 +470,17 @@ class Filters:
     max_bytes: int | None
     gitignore: GitIgnore | None
 
-    def skip_dir(self, name: str, rel_path: str) -> bool:
+    def skip_dir(self, name: str, rel_path: str) -> str | None:
+        """Return the reason this directory is skipped, or None to walk it."""
         if name in self.ignore_dirs:
-            return True
+            return "ignore list"
         if not self.include_hidden and name.startswith(".") and name not in KEEP_HIDDEN:
-            return True
+            return "hidden"
         if any(fnmatch.fnmatch(rel_path, g) or fnmatch.fnmatch(name, g) for g in self.exclude_globs):
-            return True
+            return "--exclude"
         if self.gitignore and self.gitignore.matches(rel_path, is_dir=True):
-            return True
-        return False
+            return ".gitignore"
+        return None
 
     def skip_file(self, name: str, rel_path: str) -> bool:
         if name in self.ignore_files:
@@ -546,7 +547,14 @@ class ScanResult:
     skipped_large: int = 0
     duration: float = 0.0
     unknown_files: list[str] = field(default_factory=list)
-    skipped_dirs: list[str] = field(default_factory=list)
+    skipped_dirs: list[tuple[str, str]] = field(default_factory=list)
+
+    def skipped_dirs_by_reason(self) -> list[tuple[str, list[str]]]:
+        """Skipped directories grouped by why they were skipped."""
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for path, reason in self.skipped_dirs:
+            grouped[reason].append(path)
+        return sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
 
     def unknown_by_extension(self) -> list[tuple[str, int]]:
         """Unrecognized files grouped by extension, most common first."""
@@ -557,8 +565,9 @@ class ScanResult:
         return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
-# Suffixes that wrap another file name, e.g. config.h.in or main.cpp.template.
-TEMPLATE_EXTS = {".in", ".tmpl", ".template", ".orig", ".bak"}
+# Suffixes that wrap another file name, e.g. config.h.in or .env.example.
+TEMPLATE_EXTS = {".in", ".tmpl", ".template", ".orig", ".bak",
+                 ".example", ".sample", ".dist", ".default"}
 
 # Extensions two languages share, resolved by looking at the file itself.
 AMBIGUOUS_EXTS = {".m"}
@@ -705,6 +714,15 @@ def _opening_pair(line: str, pairs: tuple[tuple[str, str], ...]):
     return None
 
 
+def looks_binary(path: str) -> bool:
+    """Cheap check used on files whose extension we do not recognize."""
+    try:
+        with open(path, "rb") as handle:
+            return b"\0" in handle.read(8192)
+    except OSError:
+        return True
+
+
 def read_text(path: str) -> tuple[str, int] | None:
     """Read a file as UTF-8 text. Returns None for binary or unreadable files."""
     try:
@@ -729,7 +747,7 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
     total = Stats()
     skipped_unknown = skipped_binary = skipped_large = 0
     unknown_files: list[str] = []
-    skipped_dirs: list[str] = []
+    skipped_dirs: list[tuple[str, str]] = []
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_links):
         rel_dir = os.path.relpath(dirpath, root)
@@ -741,8 +759,9 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
         kept: list[str] = []
         for name in sorted(dirnames):
             rel_sub = f"{rel_dir}/{name}" if rel_dir else name
-            if filters.skip_dir(name, rel_sub):
-                skipped_dirs.append(rel_sub)
+            reason = filters.skip_dir(name, rel_sub)
+            if reason:
+                skipped_dirs.append((rel_sub, reason))
             else:
                 kept.append(name)
         dirnames[:] = kept
@@ -755,8 +774,13 @@ def scan(root: str, filters: Filters, follow_links: bool = False) -> ScanResult:
             full_path = os.path.join(dirpath, filename)
             language = detect_language(filename, full_path)
             if language is None:
-                skipped_unknown += 1
-                unknown_files.append(rel_path)
+                # An unknown extension on a binary file is not a gap in
+                # LANGUAGE_MAP, so do not report it as one.
+                if looks_binary(full_path):
+                    skipped_binary += 1
+                else:
+                    skipped_unknown += 1
+                    unknown_files.append(rel_path)
                 continue
 
             if filters.max_bytes is not None:
@@ -1001,14 +1025,22 @@ def print_unknown(result: ScanResult, paint: Palette, limit: int = 10) -> None:
         print()
 
     if result.skipped_dirs:
-        names = sorted({os.path.basename(path) for path in result.skipped_dirs})
+        remedies = {
+            "ignore list": "--no-defaults, or --ignore-dir for one-off runs",
+            ".gitignore": "--no-gitignore",
+            "hidden": "--include-hidden",
+            "--exclude": "drop the --exclude pattern",
+        }
         print(paint(f"Skipped directories ({len(result.skipped_dirs)})", "bold"))
+        print(paint("nothing inside these was counted", "bright_black"))
         print(paint("-" * 60, "bright_black"))
-        print(paint("  " + ", ".join(names), "bright_black"))
-        print(paint("  these came from IGNORE_DIRS, .gitignore, --exclude or the "
-                    "hidden-file rule", "bright_black"))
-        print(paint("  use --no-defaults, --no-gitignore or --include-hidden to "
-                    "count them", "bright_black"))
+        for reason, paths in result.skipped_dirs_by_reason():
+            header = f"{reason} ({len(paths)}), count them with {remedies[reason]}"
+            print(paint(header, "bright_cyan"))
+            for path in sorted(paths)[:limit]:
+                print(paint(f"    {path}", "bright_black"))
+            if len(paths) > limit:
+                print(paint(f"    ... and {len(paths) - limit} more", "bright_black"))
         print()
 
 
